@@ -1,6 +1,18 @@
 from mcp.server.fastmcp import FastMCP
 import os
 from linerun import Code_Runner
+from dotdb.main import DataBase, point
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+try:
+    db = DataBase(Dimensions=384, Path="facts.db")
+    if os.path.exists("facts.db"):
+        db.load()
+except Exception as e:
+    db = None
+
 mcp = FastMCP("PlaneMCP")
 runner = None
 @mcp.tool()
@@ -82,5 +94,24 @@ def run_code(name: str) -> str:
     if not runner:
         return "Error: Code_Runner not initialized."
     return runner.Run_Code(name)
+@mcp.tool()
+def remember_fact(fact: str) -> str:
+    """Stores a fact into the local dotdb database."""
+    if not db:
+        return "Error: Database not initialized."
+    emb = model.encode(fact).tolist()
+    p = point(fact, 384, emb)
+    db.insert(p)
+    db.save()
+    return "Successfully remembered fact."
+@mcp.tool()
+def recall_info(query: str, k: int = 3) -> list[str]:
+    """Recalls up to k relevant facts from the local dotdb database based on the query."""
+    if not db:
+        raise ValueError("Database not initialized.")
+    emb = model.encode(query).tolist()
+    p = point(query, 384, emb)
+    results = db.search(p, k)
+    return [res[1].text for res in results]
 if __name__ == "__main__":
     mcp.run()
