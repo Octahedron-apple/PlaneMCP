@@ -12,7 +12,7 @@ dependencies = [
     "linerun",
     "dotdb",
     "mcp",
-    "sentence-transformers"
+    "fastembed"
 ]
 
 [project.optional-dependencies]

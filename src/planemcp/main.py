@@ -1,117 +1,149 @@
 from mcp.server.fastmcp import FastMCP
 import os
-from linerun import Code_Runner
+from linerun.main import Code_Runner
 from dotdb.main import DataBase, point
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
+class PlaneMCPServer:
+    def __init__(self, memory_dir: str = None):
+        self.mcp = FastMCP("PlaneMCP")
+        self.runner = None
+        self.model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        
+        if memory_dir is None:
+            import inspect
+            try:
+                caller_frame = inspect.stack()[1]
+                caller_dir = os.path.dirname(os.path.abspath(caller_frame.filename))
+                memory_path = os.path.join(caller_dir, "facts.db")
+            except Exception:
+                memory_path = os.path.join(os.getcwd(), "facts.db")
+        else:
+            memory_path = os.path.join(memory_dir, "facts.db")
+            
+        try:
+            self.db = DataBase(Dimensions=384, Path=memory_path)
+            if os.path.exists(memory_path):
+                self.db.load()
+        except Exception as e:
+            self.db = None
+            
+        self._register_tools()
 
-try:
-    db = DataBase(Dimensions=384, Path="facts.db")
-    if os.path.exists("facts.db"):
-        db.load()
-except Exception as e:
-    db = None
+    def _register_tools(self):
+        @self.mcp.tool()
+        def init_runner(path: str, venv_path: str) -> str:
+            """
+            Creates a new sandboxed runner. 
+            Will throw an error if Path is not empty. Automatically scaffolds the Python virtual environment.
+            """
+            os.makedirs(path, exist_ok=True)
+            self.runner = Code_Runner(path, venv_path)
+            return f"Successfully initialized Code_Runner at {path} with venv {venv_path}"
 
-mcp = FastMCP("PlaneMCP")
-runner = None
-@mcp.tool()
-def init_runner(path: str, venv_path: str) -> str:
-    """
-    Creates a new sandboxed runner. 
-    Will throw an error if Path is not empty. Automatically scaffolds the Python virtual environment.
-    """
-    global runner
-    os.makedirs(path, exist_ok=True)
-    runner = Code_Runner(path, venv_path)
-    return f"Successfully initialized Code_Runner at {path} with venv {venv_path}"
-@mcp.tool()
-def write_file(name: str, content: str) -> str:
-    """Overwrites (or creates) a file with the exact content provided."""
-    if not runner:
-        return "Error: Code_Runner not initialized. Call init_runner first."
-    runner.Write_File(name, content)
-    return f"Successfully wrote to {name}"
-@mcp.tool()
-def replace_in_file(name: str, target_content: str, replacement_content: str) -> str:
-    """
-    Finds the first exact match of TargetContent and replaces it. 
-    Ideal for surgical patches. Throws an error if the match is not exact.
-    """
-    if not runner:
-        return "Error: Code_Runner not initialized."
-    runner.Replace_In_File(name, target_content, replacement_content)
-    return f"Successfully replaced content in {name}"
-@mcp.tool()
-def read_file(name: str) -> str:
-    """Returns the string contents of a file."""
-    if not runner:
-        return "Error: Code_Runner not initialized."
-    return runner.Read_File(name)
-@mcp.tool()
-def add_file(name: str) -> str:
-    """Creates an empty file."""
-    if not runner:
-        return "Error: Code_Runner not initialized."
-    runner.Add_File(name)
-    return f"Successfully added empty file {name}"
-@mcp.tool()
-def delete_file(name: str) -> str:
-    """Deletes a file."""
-    if not runner:
-        return "Error: Code_Runner not initialized."
-    runner.Delete_File(name)
-    return f"Successfully deleted {name}"
-@mcp.tool()
-def all_files(regex: str = None) -> list[str]:
-    """Returns a list of all files relative to the sandbox path. Supports optional regex filtering."""
-    if not runner:
-        raise ValueError("Code_Runner not initialized.")
-    return runner.All_files(regex)
-@mcp.tool()
-def add_module(name: str) -> str:
-    """Uses pip to install a package into the virtual environment."""
-    if not runner:
-        return "Error: Code_Runner not initialized."
-    runner.Add_Module(name)
-    return f"Successfully added module {name}"
-@mcp.tool()
-def remove_module(name: str) -> str:
-    """Uninstalls a package."""
-    if not runner:
-        return "Error: Code_Runner not initialized."
-    runner.Remove_Module(name)
-    return f"Successfully removed module {name}"
-@mcp.tool()
-def list_modules() -> list[str]:
-    """Lists all installed pip packages."""
-    if not runner:
-        raise ValueError("Code_Runner not initialized.")
-    return runner.List_Modules()
-@mcp.tool()
-def run_code(name: str) -> str:
-    """Executes a file using the virtual environment's Python binary. Captures and returns standard output."""
-    if not runner:
-        return "Error: Code_Runner not initialized."
-    return runner.Run_Code(name)
-@mcp.tool()
-def remember_fact(fact: str) -> str:
-    """Stores a fact into the local dotdb database."""
-    if not db:
-        return "Error: Database not initialized."
-    emb = model.encode(fact).tolist()
-    p = point(fact, 384, emb)
-    db.insert(p)
-    db.save()
-    return "Successfully remembered fact."
-@mcp.tool()
-def recall_info(query: str, k: int = 3) -> list[str]:
-    """Recalls up to k relevant facts from the local dotdb database based on the query."""
-    if not db:
-        raise ValueError("Database not initialized.")
-    emb = model.encode(query).tolist()
-    p = point(query, 384, emb)
-    results = db.search(p, k)
-    return [res[1].text for res in results]
+        @self.mcp.tool()
+        def write_file(name: str, content: str) -> str:
+            """Overwrites (or creates) a file with the exact content provided."""
+            if not self.runner:
+                return "Error: Code_Runner not initialized. Call init_runner first."
+            self.runner.Write_File(name, content)
+            return f"Successfully wrote to {name}"
+
+        @self.mcp.tool()
+        def replace_in_file(name: str, target_content: str, replacement_content: str) -> str:
+            """
+            Finds the first exact match of TargetContent and replaces it. 
+            Ideal for surgical patches. Throws an error if the match is not exact.
+            """
+            if not self.runner:
+                return "Error: Code_Runner not initialized."
+            self.runner.Replace_In_File(name, target_content, replacement_content)
+            return f"Successfully replaced content in {name}"
+
+        @self.mcp.tool()
+        def read_file(name: str) -> str:
+            """Returns the string contents of a file."""
+            if not self.runner:
+                return "Error: Code_Runner not initialized."
+            return self.runner.Read_File(name)
+
+        @self.mcp.tool()
+        def add_file(name: str) -> str:
+            """Creates an empty file."""
+            if not self.runner:
+                return "Error: Code_Runner not initialized."
+            self.runner.Add_File(name)
+            return f"Successfully added empty file {name}"
+
+        @self.mcp.tool()
+        def delete_file(name: str) -> str:
+            """Deletes a file."""
+            if not self.runner:
+                return "Error: Code_Runner not initialized."
+            self.runner.Delete_File(name)
+            return f"Successfully deleted {name}"
+
+        @self.mcp.tool()
+        def all_files(regex: str = None) -> list[str]:
+            """Returns a list of all files relative to the sandbox path. Supports optional regex filtering."""
+            if not self.runner:
+                raise ValueError("Code_Runner not initialized.")
+            return self.runner.All_files(regex)
+
+        @self.mcp.tool()
+        def add_module(name: str) -> str:
+            """Uses pip to install a package into the virtual environment."""
+            if not self.runner:
+                return "Error: Code_Runner not initialized."
+            self.runner.Add_Module(name)
+            return f"Successfully added module {name}"
+
+        @self.mcp.tool()
+        def remove_module(name: str) -> str:
+            """Uninstalls a package."""
+            if not self.runner:
+                return "Error: Code_Runner not initialized."
+            self.runner.Remove_Module(name)
+            return f"Successfully removed module {name}"
+
+        @self.mcp.tool()
+        def list_modules() -> list[str]:
+            """Lists all installed pip packages."""
+            if not self.runner:
+                raise ValueError("Code_Runner not initialized.")
+            return self.runner.List_Modules()
+
+        @self.mcp.tool()
+        def run_code(name: str) -> str:
+            """Executes a file using the virtual environment's Python binary. Captures and returns standard output."""
+            if not self.runner:
+                return "Error: Code_Runner not initialized."
+            return self.runner.Run_Code(name)
+
+        @self.mcp.tool()
+        def remember_fact(fact: str) -> str:
+            """Stores a fact into the local dotdb database."""
+            if not self.db:
+                return "Error: Database not initialized."
+            emb = list(self.model.embed([fact]))[0].tolist()
+            p = point(fact, 384, emb)
+            self.db.insert(p)
+            self.db.save()
+            return "Successfully remembered fact."
+
+        @self.mcp.tool()
+        def recall_info(query: str, k: int = 3) -> list[str]:
+            """Recalls up to k relevant facts from the local dotdb database based on the query."""
+            if not self.db:
+                raise ValueError("Database not initialized.")
+            emb = list(self.model.embed([query]))[0].tolist()
+            p = point(query, 384, emb)
+            results = self.db.search(p, k)
+            return [res[1].text for res in results]
+
+    def run(self):
+        self.mcp.run()
+
 if __name__ == "__main__":
-    mcp.run()
+    server = PlaneMCPServer()
+    server.run()
